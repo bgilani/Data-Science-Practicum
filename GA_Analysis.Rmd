@@ -1,0 +1,419 @@
+---
+title: "Untitled"
+author: "Bilal Gilani"
+date: "2/8/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## LOAD DATA
+```{r}
+load("GA_VOTERS.rda")
+```
+
+## RENAME/EDIT COLUMNS
+```{r}
+library(tidyverse)
+
+colnames(GA_voter)[colnames(GA_voter)=="YEAR"]<-"REG_YEAR"
+
+GA_voter <- GA_voter %>%
+  mutate(AGE_2021 = 2021 - BIRTHDATE) ## Age in 2021?
+```
+
+## COUNTY INFO
+```{r}
+library(zipcodeR)
+
+test <- search_state("GA")
+test <- test[, c("zipcode", "county")] ## only want county
+
+## Need to change the column name of "ZIP5" in order to acquire County name
+colnames(GA_voter)[colnames(GA_voter)=="ZIP5"] <- "zipcode"
+
+## convert from factor to character
+as.character(GA_voter$zipcode)
+GA_voter[["zipcode"]]<-as.character(GA_voter[["zipcode"]])
+
+## combine
+GA_voter <- left_join(GA_voter, test, by = "zipcode")
+
+table(GA_voter$county) ## Two DeKalb counties
+
+which(GA_voter$county == "Dekalb County")
+
+GA_voter$county[GA_voter$county == "Dekalb County"] <- "DeKalb County" ## create ONE DeKalb County
+which(GA_voter$county == "Dekalb County") ## FIXED
+
+## Check if any counties are missing
+sum(is.na(GA_voter$county))
+
+## create new dataset without NA's
+GA_voter_full <- GA_voter[!is.na(GA_voter$county),]
+sum(is.na(GA_voter_full$county))
+
+## change the county variable to mimic the tidycensus county variable later in the code
+GA_voter_full$county <- paste(GA_voter_full[["county"]], "Georgia", sep = ", ")
+
+## Registrations per year (ALL)
+GA_year_all <- as.data.frame(table(GA_voter_full$REG_YEAR)) ## Make note of 1965-1966 and 1975-1976
+colnames(GA_year_all)[colnames(GA_year_all)=="Freq"] <- "Reg_Voters"
+
+GA_year_sub <- GA_year_all %>%          ## Use for Presentation
+  slice(45:61)
+
+## Create 2012-2016 Subset
+GA_voter16 <- subset(GA_voter_full, GA_voter_full$REG_YEAR >= 2012 & GA_voter_full$REG_YEAR <= 2016) ## DO I NEED TO SUBSET? - YES
+
+## Create County registrations
+GA_county <- table(GA_voter16$county)
+GA_county <- as.data.frame(GA_county)
+
+colnames(GA_county)[colnames(GA_county)=="Var1"] <- "County"
+
+colnames(GA_county)[colnames(GA_county)=="Freq"] <- "Reg_Voters"
+
+GA_county <- GA_county[-c(32),] ## Remove Cleburn county
+
+## Registrations per year (2012-2016)
+GA_year16 <- as.data.frame(table(GA_voter16$REG_YEAR))
+
+colnames(GA_year16)[colnames(GA_year16)=="Freq"] <- "Reg_Voters"
+
+summary(GA_voter16$BIRTHDATE)
+ 
+```
+
+## TIDYCENSUS
+```{r}
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(psych)
+library(tidycensus)
+
+census_api_key("79dcdbc724a9939f8ec75b6642f1e59f57da70e9")
+
+v16 <- load_variables(2016, "acs5", cache = TRUE)
+
+##  NOTE: Should create vector of desired variables
+```
+
+Desired variables:
+
+Population by Race:
+  Total: B02001_001
+  White: B02001_002	
+  Black: B02001_003 
+  Native American: B02001_004
+  Asian: B02001_005 
+  Hawaiian/Pacific Islander: B02001_006
+  Some **other** race alone: B02001_007
+  Two or More Races: B02001_008
+
+Median Income: B19013_001
+Median Age: B01002_001
+
+Citizenship:
+  Total: B05001_001
+  U.S. Citizen born in U.S.: B05001_002
+  U.S. Citizen born in PR or Islands: B05001_003
+  U.S. Citizen born abroad of American parent(s): B05001_004
+  **Naturalized** U.S. Citizen: B05001_005
+
+English Literacy:
+  Total: B06007_001
+  Speak Only English: B06007_002
+  Speak Only Spanish: B06007_003
+  Speak Spanish/Speak English "very well": B06007_004
+  Speak Spanish/Speak English less than "very well": B06007_005
+  Speak other languages: B06007_006 
+  Speak other languages/Speak English "very well" : B06007_007
+  Speak other languages/Speak English less than "very well" : B06007_008
+
+Education:
+  Total: B06009_001
+  Less than high school graduate: B06009_002
+  High school graduate (includes equivalency): B06009_003 
+  Some college or Associate's degree: B06009_004 
+  Bachelor's degree: B06009_005
+  Graduate or professional degree: B06009_006
+  
+
+
+## COUNTY
+```{r}
+## TEST: Georgia 2016, NOTE: acs is taking data from a 5 year period of 2012-2016
+test2 <- get_acs(geography = "county",
+                  variables = "B02001_001",
+                  state = "GA",
+                   year = 2016)
+
+## Create vector of desired variables
+variable_vec <- c("B01003_001", ## Total Population
+                  "B01002_001", ## Median Age
+                  "B19013_001", ## Median income
+                  paste0("B02001_00", 1:8), ## Race variables
+                  paste0("B05001_00", 1:6), ## Citizenship variables
+                  paste0("B06007_00", c(1:3, 6)), ## Language variables
+                  paste0("B06009_00", 1:6) ## Education variables
+                  )
+
+## Use vector
+GA2016 <- get_acs(geography = "county",
+                  variables = variable_vec,
+                  state = "GA",
+                   year = 2016)
+
+library(reshape)
+GA2016 <- cast(GA2016, NAME~variable, value = "estimate")
+
+## Rename columns
+colnames(GA2016) <- c("County", "Median Age", "Gen. Population",
+                      ## Race variables
+                      "Race_Total", "White", "Black", "Native American", "Asian", "Hawaiian/Pacific Islander", "Other", "Two or More Races",
+                      ## Citizenship variables
+                      "Citizenship_Total", "U.S. Citizen born in U.S", "U.S. Citizen born in PR or Islands", 
+                      "U.S. Citizen born abroad of American parent(s)","Naturalized U.S. Citizen", "Not a U.S. Citizen",
+                      ## Language variables
+                      "Language_Total", "Speak Only English", "Speak Spanish", "Speak other languages",
+                      ## Education variables
+                      "Education_Total", "Less than high school graduate", "High school graduate (includes equivalency)", 
+                      "Some college or Associate's degree", "Bachelor degree", "Graduate or professional degree",
+                      "Median Income"
+                      )
+                      
+
+## Need to re-attach GEOID as well as add registered voters by county
+test2 <- test2[, c("GEOID", "NAME")]
+colnames(test2) <- c("GEOID", "County")
+
+GA2016 <- left_join(GA2016, test2, by = "County")
+GA2016 <- left_join(GA2016, GA_county, by = "County")
+
+## Reorder columns
+GA2016 <- GA2016[, c("GEOID", colnames(GA2016)[!colnames(GA2016) %in% c("GEOID")])] ## Move GEOID to first column
+
+GA16_model <- GA2016[, colnames(GA2016)!="GEOID"] ## USE THIS FOR MODELING
+
+```
+
+```{r}
+## Which counties are the most diverse?
+
+diversity <- GA16_model[, c("County", "Race_Total", "White", "Black", "Native American", "Asian",
+                            "Hawaiian/Pacific Islander", "Other", "Two or More Races")]
+
+diversity <- diversity %>%
+  mutate(Minority_Percent = (Black + `Native American` + Asian + `Hawaiian/Pacific Islander` + 
+                               `Two or More Races` + diversity$Other) / `Race_Total`)
+
+## Least diverse?
+diversity <- diversity[order(diversity$Minority_Percent),]
+head(diversity, n = 10)
+
+## Most diverse?
+diversity <- diversity[order(-diversity$Minority_Percent),]
+head(diversity, n = 10)
+
+## In both of the general/presidential election cases of 2012 and 2016, the Democratic candidate won in the top 10 most diverse counties. 
+## Whereas,conversely, the Republican candidate won in the bottom 10 diverse counties.
+```
+
+
+
+USE GA16_model DATASET
+## MODELS
+```{r}
+## Correlations?
+GA16_cor <- select(GA16_model, -c(County))
+cor_GA <- cor(GA16_cor)
+
+library(Hmisc)
+cor_GA2 <- rcorr(as.matrix(cor_GA))
+
+cor_GA2
+
+library(corrplot)
+corrplot(cor_GA, type = "upper", order = "hclust",
+         tl.col = "black", tl.srt = 45)
+
+
+
+```
+
+```{r}
+## TEST:  Median Income model?
+attach(GA16_model)
+income.lm <- lm(`Median Income` ~. -County, data = GA16_model)
+
+summary(income.lm)
+
+income.lm
+
+plot(income.lm)
+
+```
+
+
+```{r}
+## Voter Registration
+
+library(data.table)
+
+## Drop county 
+x <- GA16_model[, !(colnames(GA16_model) %in% c("County"))]
+x <- setDT(x) # Convert x to a data table
+
+## Create a vector of ratio variables by dividing each category by total observations per category
+
+## Race variables
+race_cols <- c("White", "Black", "Native American", "Asian", "Hawaiian/Pacific Islander",
+               "Other", "Two or More Races")
+x[, (race_cols) := lapply(.SD, function(x) {x / Race_Total}), .SDcols = race_cols] ## Divide each variable by Gen. Population to get ratios
+
+## Education variables
+education_cols <- c("Less than high school graduate", "High school graduate (includes equivalency)", 
+                    "Some college or Associate's degree", "Bachelor degree", "Graduate or professional degree")
+x[, (education_cols) := lapply(.SD, function(x) {x / Education_Total}), .SDcols = education_cols] ## Divide each variable by Gen. Population to get ratios
+
+## Citizenship variables
+citizenship_cols <- c("U.S. Citizen born in U.S", "U.S. Citizen born in PR or Islands", 
+                      "U.S. Citizen born abroad of American parent(s)","Naturalized U.S. Citizen", "Not a U.S. Citizen")
+x[, (citizenship_cols) := lapply(.SD, function(x) {x / Citizenship_Total}), .SDcols = citizenship_cols] ## Divide each variable by Gen. Population to get ratios
+
+## Language variables
+language_cols <- c("Speak Only English", "Speak Spanish", "Speak other languages")
+x[, (language_cols) := lapply(.SD, function(x) {x / Language_Total}), .SDcols = language_cols] ## Divide each variable by Gen. Population to get ratios
+
+
+## Calculate percentage of registered voters (dependent variable for model)
+x[, "Reg_Percent" := Reg_Voters / `Gen. Population`]
+
+## Drop Gen. Population, Race_Total, Citizenship_Total, Education_Total, and Language_Total
+x <- x[, !colnames(x) %in% c("Gen. Population", "Race_Total", "Citizenship_Total", "Education_Total", "Language_Total"), with = FALSE]
+
+## Have to drop one category from each categorical variable to avoid perfect multicollinearity
+## The resulting model coefficients will be relative to the following baseline:
+##     Two or more races
+##     Not a US citizen
+##     Speak other languages
+##     Graduate or professional degree
+x <- x[, !colnames(x) %in% c("Two or More Races", "Not a U.S. Citizen", "Speak other languages", "Graduate or professional degree"), with = FALSE]
+
+library(lmtest)
+library(sandwich)
+library(car)
+
+## Fit fractional logistic regression using glm function with binomial family
+glm1 <- glm(Reg_Percent ~ . - Reg_Voters,  data = x, family = binomial)
+plot(glm1)
+
+## Calculate robust standard errors
+se_glm_robust = coeftest(glm1, vcov = vcovHC(glm1, type="HC"))
+print(se_glm_robust) 
+
+## Test for collinearity
+model_vif <- vif(glm1)
+print(model_vif)
+## There appears to be multicollinearity among the independent variables as indiciated by the variance inflation factors
+## However, there is strong intuition for including these categorical variables in the model, and we have already
+## accounted for perfect collinearity within categorical variables.
+
+## Check if residual mean is statistically different from zero
+t.test(glm1[["residuals"]])
+## The mean of the residuals is not statistically different from zero
+
+
+## Residual normality tests
+## Plot Q-Q normality plot
+qqnorm(glm1[["residuals"]], pch = 1, frame = FALSE) 
+qqline(glm1[["residuals"]], col = "steelblue", lwd = 2)
+## Q-Q plots indicate that the residuals are not normally distributed
+
+## Shapiro-Wilk test
+## Null hypothesis: Residuals are normally distributed
+## Alternate hypothesis: Residuals are not normally distributed
+## p-vale threshold: 0.05 
+sw_test <- shapiro.test(glm1[["residuals"]])
+print(sw_test)
+## p-value is <0.05, so we reject the null hypothesis that the residuals are normally distributed
+
+## Kolmogorov-Smirnov test
+## Null hypothesis: Residuals are normally distributed
+## Alternate hypothesis: Residuals are not normally distributed
+## p-vale threshold: 0.05 
+ks_test <- ks.test(glm1[["residuals"]], "pnorm", mean = mean(glm1[["residuals"]]), sd = sd(glm1[["residuals"]]))
+print(ks_test)
+
+## p-value is > 0.05, so we fail to reject the null hypothesis that the residuals are normally distributed
+
+## The Shapiro-Wilk and Kolmogorov-Smirnov tests produce contradictory results, and the Q-Q plot may indicate
+## a mild deviation from normality, but the overall results do not confirm that the residuals severely depart
+## from a normal distribution.
+
+```
+
+
+## MAP
+```{r}
+library(tmap)
+library(tmaptools)
+library(leaflet)
+library(sf)
+library(leaflet.extras)
+library(raster)
+
+GAgeo <- st_read("C:\\Users\\bgila\\Downloads\\tl_2020_us_county")
+head(GAgeo)
+
+GAmap <- merge(GAgeo, GA2016, by.x = "GEOID", by.y = "GEOID") ## Use GEOID to map each county in Georgia
+
+## initial map test
+gastaticmap <- tm_shape(GAmap) +
+tm_fill(GAmap$White, title="White", palette = "PRGn") +
+tm_borders(alpha=.5) +
+tm_style("classic") 
+
+gastaticmap ## WORKED
+
+library(ggplot2)
+
+colnames(GAmap)<-gsub("/", "_", colnames(GAmap)) ## Error had been occurring due to the "/" in certain variables, changing to "_"
+
+
+lapply(c(19:20, 22:28, 30:34, 36:38, 40:46), function(x) {  ## Select Variables to Map
+  
+  randint<-runif(1, 0, 3)                         ## helps randomize color in each map
+  if (randint >=0 & randint <= 1) {
+    low_color<-"#90EE90"
+    high_color<-"#006400"
+  } else if(randint > 1 & randint <=2) {
+    low_color<-"#D9F1FF"
+    high_color<-"#009DFF"
+  } else {
+    low_color<-"#F5D8CE"
+    high_color<-"#E18B6D"
+  }
+  
+  df<-GAmap[, c(x, 42)]
+  colnames(df)[1]<-"fill_value"
+  
+  png(paste0("C:\\Users\\bgila\\Desktop\\SPRING2021\\DATA 793\\Project", "\\", colnames(GAmap[, x]), "_map.png")) ## naming PNG files
+  
+  plot_a<-ggplot(data = df) + 
+  geom_sf(aes(fill = fill_value)) +
+  scale_fill_gradient(low = low_color, high = high_color)+
+  ggtitle(colnames(GAmap[, x]), "by GA county")
+  
+  print(plot_a)
+  
+  dev.off()
+})
+
+## SHOULD PRINT OUT MAPS FOR ALL 24 VARIABLES INCLUDED
+
+```
